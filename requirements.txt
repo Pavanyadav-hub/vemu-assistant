@@ -1,4 +1,4 @@
 Flask
-g4f
+google-genai
 wikipedia
 gunicorn
