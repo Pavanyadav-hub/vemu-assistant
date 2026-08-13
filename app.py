@@ -1,11 +1,13 @@
 import os
 from flask import Flask, render_template_string, request, jsonify
 import wikipedia
-import g4f
+from google import genai
 
 app = Flask(__name__)
 
-# Web UI Template
+# Initialize Google GenAI client (uses GEMINI_API_KEY from Render environment)
+client = genai.Client()
+
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -36,6 +38,7 @@ HTML_PAGE = """
         const chat = document.getElementById('chat');
 
         function speakText(text) {
+            window.speechSynthesis.cancel(); // stop previous speech
             const utterance = new SpeechSynthesisUtterance(text);
             window.speechSynthesis.speak(utterance);
         }
@@ -48,7 +51,7 @@ HTML_PAGE = """
         function startListening() {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
-                status.innerText = "Speech Recognition not supported in this browser.";
+                status.innerText = "Speech Recognition not supported in this browser. Try Chrome.";
                 return;
             }
 
@@ -56,12 +59,16 @@ HTML_PAGE = """
             recognition.lang = 'en-US';
 
             recognition.onstart = () => { status.innerText = "Listening..."; };
-            recognition.onspeechend = () => { recognition.stop(); status.innerText = "Thinking..."; };
+            recognition.onspeechend = () => { recognition.stop(); status.innerText = "Processing..."; };
 
             recognition.onresult = (event) => {
                 const command = event.results[0][0].transcript;
                 log("You", command);
                 askVemu(command);
+            };
+
+            recognition.onerror = (e) => {
+                status.innerText = "Microphone error. Check permissions.";
             };
 
             recognition.start();
@@ -80,7 +87,7 @@ HTML_PAGE = """
                 speakText(data.answer);
             })
             .catch(err => {
-                status.innerText = "Error getting response";
+                status.innerText = "Server response failed.";
             });
         }
     </script>
@@ -98,19 +105,16 @@ def ask():
     question = data.get("question", "")
     
     try:
-        response = g4f.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": question}]
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=question,
         )
-        if isinstance(response, str):
-            answer = response
-        else:
-            answer = response.choices[0].message.content
+        answer = response.text
     except Exception:
         try:
             answer = wikipedia.summary(question, sentences=2)
         except Exception:
-            answer = "Sorry, I couldn't process that question."
+            answer = "Sorry, I couldn't find an answer to that."
             
     return jsonify({"answer": answer})
 
