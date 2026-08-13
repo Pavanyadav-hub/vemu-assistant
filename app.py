@@ -5,7 +5,7 @@ from google import genai
 
 app = Flask(__name__)
 
-# Initialize Google GenAI client (uses GEMINI_API_KEY from Render environment)
+# Initializes automatically using GEMINI_API_KEY from Render Environment Variables
 client = genai.Client()
 
 HTML_PAGE = """
@@ -38,7 +38,7 @@ HTML_PAGE = """
         const chat = document.getElementById('chat');
 
         function speakText(text) {
-            window.speechSynthesis.cancel(); // stop previous speech
+            window.speechSynthesis.cancel();
             const utterance = new SpeechSynthesisUtterance(text);
             window.speechSynthesis.speak(utterance);
         }
@@ -110,10 +110,12 @@ def ask():
             contents=question,
         )
         answer = response.text
-    except Exception:
+    except Exception as e:
+        print("Gemini API Error:", e)  # Prints failure reason directly to Render logs
         try:
             answer = wikipedia.summary(question, sentences=2)
-        except Exception:
+        except Exception as wiki_e:
+            print("Wikipedia Error:", wiki_e)
             answer = "Sorry, I couldn't find an answer to that."
             
     return jsonify({"answer": answer})
