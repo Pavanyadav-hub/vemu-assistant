@@ -21,14 +21,14 @@ HTML_PAGE = """
         p { color: #A0A0A0; font-size: 14px; }
         .btn { background: #BB86FC; color: #121212; border: none; padding: 14px 28px; font-size: 16px; font-weight: bold; border-radius: 30px; cursor: pointer; width: 80%; margin: 15px 0; }
         .status { margin-top: 15px; font-weight: 600; color: #03DAC6; }
-        #chat { text-align: left; background: #181818; padding: 12px; border-radius: 8px; height: 200px; overflow-y: auto; font-family: monospace; font-size: 13px; margin-top: 15px; border: 1px solid #333; }
+        #chat { text-align: left; background: #181818; padding: 12px; border-radius: 8px; height: 220px; overflow-y: auto; font-family: monospace; font-size: 13px; margin-top: 15px; border: 1px solid #333; }
     </style>
 </head>
 <body>
     <div class="card">
         <h1>VEMU CLOUD</h1>
         <p>Voice-Activated AI Companion</p>
-        <button class="btn" onclick="startListening()">🎤 Speak to Vemu</button>
+        <button class="btn" id="micBtn" onclick="startListening()">🎤 Speak to Vemu</button>
         <div class="status" id="status">Tap button and speak</div>
         <div id="chat"></div>
     </div>
@@ -36,11 +36,26 @@ HTML_PAGE = """
     <script>
         const status = document.getElementById('status');
         const chat = document.getElementById('chat');
+        let recognition = null;
 
         function speakText(text) {
-            window.speechSynthesis.cancel();
-            const utterance = new SpeechSynthesisUtterance(text);
-            window.speechSynthesis.speak(utterance);
+            if ('speechSynthesis' in window) {
+                // FORCE RESET: Resume and cancel any frozen speech queues
+                window.speechSynthesis.resume();
+                window.speechSynthesis.cancel();
+
+                // Clean text (remove Markdown formatting like * or # before speaking)
+                const cleanText = text.replace(/[*#_`]/g, '');
+                
+                const utterance = new SpeechSynthesisUtterance(cleanText);
+                utterance.rate = 1.0;
+                
+                utterance.onend = function() {
+                    status.innerText = "Ready for next question!";
+                };
+
+                window.speechSynthesis.speak(utterance);
+            }
         }
 
         function log(sender, message) {
@@ -49,17 +64,28 @@ HTML_PAGE = """
         }
 
         function startListening() {
+            // Cancel any current speech before listening
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+            }
+
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
                 status.innerText = "Speech Recognition not supported in this browser. Try Chrome.";
                 return;
             }
 
-            const recognition = new SpeechRecognition();
+            if (recognition) {
+                try { recognition.stop(); } catch(e) {}
+            }
+
+            recognition = new SpeechRecognition();
             recognition.lang = 'en-US';
+            recognition.continuous = false;
+            recognition.interimResults = false;
 
             recognition.onstart = () => { status.innerText = "Listening..."; };
-            recognition.onspeechend = () => { recognition.stop(); status.innerText = "Processing..."; };
+            recognition.onspeechend = () => { status.innerText = "Processing answer..."; };
 
             recognition.onresult = (event) => {
                 const command = event.results[0][0].transcript;
@@ -68,7 +94,7 @@ HTML_PAGE = """
             };
 
             recognition.onerror = (e) => {
-                status.innerText = "Microphone error. Check permissions.";
+                status.innerText = "Microphone error or timed out. Tap button again.";
             };
 
             recognition.start();
@@ -82,7 +108,6 @@ HTML_PAGE = """
             })
             .then(res => res.json())
             .then(data => {
-                status.innerText = "Ready";
                 log("Vemu", data.answer);
                 speakText(data.answer);
             })
@@ -105,18 +130,21 @@ def ask():
     question = data.get("question", "")
     
     try:
+        # Prompting Gemini to keep responses concise for smooth text-to-speech output
+        prompt = f"Answer the following query concisely in 2 to 3 sentences for a voice assistant: {question}"
+        
         response = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=question,
+            contents=prompt,
         )
         answer = response.text
     except Exception as e:
-        print("Gemini API Error:", e)  # Prints failure reason directly to Render logs
+        print("Gemini API Error:", e)
         try:
             answer = wikipedia.summary(question, sentences=2)
         except Exception as wiki_e:
             print("Wikipedia Error:", wiki_e)
-            answer = "Sorry, I couldn't find an answer to that."
+            answer = "Sorry, I couldn't process that question. Please try asking again."
             
     return jsonify({"answer": answer})
 
