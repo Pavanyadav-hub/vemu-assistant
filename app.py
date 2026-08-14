@@ -14,15 +14,68 @@ wikipedia.set_user_agent("VemuVoiceAssistant/1.0 (https://github.com)")
 # Initialize Gemini Client
 client = genai.Client()
 
+# =====================================================================
+# CONTACT BOOK: Add your contacts here with Country Code (No '+' or spaces)
+# Example for India (+91): "919876543210", USA (+1): "11234567890"
+# =====================================================================
+CONTACTS = {
+    "mummy": "919347606612",  # <--- REPLACE WITH ACTUAL PHONE NUMBER
+    "bharath": "917569486357",    # <--- REPLACE WITH ACTUAL PHONE NUMBER
+    "devanand": "918897146921",
+    "macha": "916305713201"
+}
+
 def sanitize_text_for_speech(text):
     """Removes Markdown symbols so text-to-speech reads smoothly."""
     text = re.sub(r'[\*\#\_\`\>]', '', text)
     return text.strip()
 
+def process_whatsapp_message_command(question_str):
+    """
+    Detects commands like 'send message to mummy saying i am late'
+    or 'tell mom that i will be coming home late'.
+    """
+    q = question_str.lower().strip()
+
+    # Regex patterns for messaging commands
+    patterns = [
+        r'^(?:send\s+a?\s*message\s+to|text|msg)\s+([\w\s]+?)\s+(?:saying|that)\s+(.+)$',
+        r'^(?:tell)\s+([\w\s]+?)\s+(?:that|saying)\s+(.+)$',
+        r'^(?:send\s+message\s+to)\s+([\w\s]+?)\s+(.+)$'
+    ]
+
+    contact_name = None
+    msg_body = None
+
+    for pattern in patterns:
+        match = re.match(pattern, q)
+        if match:
+            contact_name = match.group(1).strip()
+            msg_body = match.group(2).strip()
+            break
+
+    if contact_name and msg_body:
+        phone_number = CONTACTS.get(contact_name)
+
+        if phone_number:
+            encoded_msg = urllib.parse.quote(msg_body)
+            whatsapp_url = f"https://api.whatsapp.com/send?phone={phone_number}&text={encoded_msg}"
+            return {
+                "action": "open_url",
+                "url": whatsapp_url,
+                "answer": f"Opening WhatsApp to send message to {contact_name.capitalize()}"
+            }
+        else:
+            return {
+                "action": "speak",
+                "answer": f"I couldn't find {contact_name} in your contact list. Please add their phone number in app dot py."
+            }
+
+    return None
+
 def process_search_or_open_command(question_str):
     """
     Detects if the command asks to open a site OR search within a site.
-    Returns a dict with 'action', 'url', 'answer' if matched, else None.
     """
     q = question_str.lower().strip()
 
@@ -243,12 +296,17 @@ def ask():
     if not question:
         return jsonify({"action": "speak", "answer": "I didn't hear a question. Please try speaking again."})
 
-    # 1. NAVIGATION & SITE SEARCH COMMANDS
+    # 1. WHATSAPP MESSAGING COMMANDS
+    whatsapp_response = process_whatsapp_message_command(question)
+    if whatsapp_response:
+        return jsonify(whatsapp_response)
+
+    # 2. NAVIGATION & SITE SEARCH COMMANDS
     nav_response = process_search_or_open_command(question)
     if nav_response:
         return jsonify(nav_response)
 
-    # 2. GENERAL AI ANSWERING WITH GEMINI
+    # 3. GENERAL AI ANSWERING WITH GEMINI
     sys_instruction = (
         "You are VEMU, a voice-activated AI assistant. "
         "You answer ALL types of questions: general knowledge, science, coding, math, advice, and conversation. "
@@ -275,7 +333,7 @@ def ask():
         except Exception as e:
             print(f"Gemini Model ({model_name}) Error:", e)
 
-    # 3. WIKIPEDIA FALLBACK
+    # 4. WIKIPEDIA FALLBACK
     if not answer:
         try:
             search_results = wikipedia.search(question)
