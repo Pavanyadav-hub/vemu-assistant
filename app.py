@@ -14,15 +14,10 @@ wikipedia.set_user_agent("VemuVoiceAssistant/1.0 (https://github.com)")
 # Initialize Gemini Client
 client = genai.Client()
 
-# =====================================================================
-# CONTACT BOOK: Add your contacts here with Country Code (No '+' or spaces)
-# Example for India (+91): "919876543210", USA (+1): "11234567890"
-# =====================================================================
+# Dynamic Contact Book (Default contacts included)
 CONTACTS = {
-    "mummy": "919347606612",  # <--- REPLACE WITH ACTUAL PHONE NUMBER
-    "bharath": "917569486357",    # <--- REPLACE WITH ACTUAL PHONE NUMBER
-    "devanand": "918897146921",
-    "macha": "916305713201"
+    "mummy": "919347606612",
+    "bharath": "917569486357"
 }
 
 def sanitize_text_for_speech(text):
@@ -37,15 +32,13 @@ def process_whatsapp_message_command(question_str):
     """
     q = question_str.lower().strip()
 
-    # Regex patterns for messaging commands
     patterns = [
         r'^(?:send\s+a?\s*message\s+to|text|msg)\s+([\w\s]+?)\s+(?:saying|that)\s+(.+)$',
         r'^(?:tell)\s+([\w\s]+?)\s+(?:that|saying)\s+(.+)$',
         r'^(?:send\s+message\s+to)\s+([\w\s]+?)\s+(.+)$'
     ]
 
-    contact_name = None
-    msg_body = None
+    contact_name, msg_body = None, None
 
     for pattern in patterns:
         match = re.match(pattern, q)
@@ -68,15 +61,13 @@ def process_whatsapp_message_command(question_str):
         else:
             return {
                 "action": "speak",
-                "answer": f"I couldn't find {contact_name} in your contact list. Please add their phone number in app dot py."
+                "answer": f"I couldn't find {contact_name} in your contacts. Please add their phone number using the contact manager above."
             }
 
     return None
 
 def process_search_or_open_command(question_str):
-    """
-    Detects if the command asks to open a site OR search within a site.
-    """
+    """Detects site navigation or search commands."""
     q = question_str.lower().strip()
 
     search_urls = {
@@ -112,11 +103,8 @@ def process_search_or_open_command(question_str):
         "linkedin": "https://www.linkedin.com"
     }
 
-    # "open [site] and search for [query]"
     m1 = re.match(r'^(?:open|go to|launch)\s+([\w\s]+?)\s+and\s+(?:search|look)\s+(?:for|about)\s+(.+)$', q)
-    # "search [site] for [query]"
     m2 = re.match(r'^search\s+([\w\s]+?)\s+for\s+(.+)$', q)
-    # "search for [query] on/in [site]"
     m3 = re.match(r'^search\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+([\w\s]+)$', q)
 
     site_target, search_query = None, None
@@ -146,7 +134,6 @@ def process_search_or_open_command(question_str):
                 "answer": f"Searching for {search_query} on {site_target}"
             }
 
-    # Plain "search for [query]"
     m4 = re.match(r'^search\s+(?:for\s+)?(.+)$', q)
     if m4 and not q.startswith("search on") and not q.startswith("search in"):
         search_query = m4.group(1).strip()
@@ -157,7 +144,6 @@ def process_search_or_open_command(question_str):
             "answer": f"Searching Google for {search_query}"
         }
 
-    # Plain "open [site]"
     m5 = re.match(r'^(?:open|launch|go to)\s+(.+)$', q)
     if m5:
         target = m5.group(1).strip()
@@ -195,8 +181,15 @@ HTML_PAGE = """
         h1 { color: #BB86FC; margin-bottom: 5px; }
         p { color: #A0A0A0; font-size: 14px; }
         .btn { background: #BB86FC; color: #121212; border: none; padding: 14px 28px; font-size: 16px; font-weight: bold; border-radius: 30px; cursor: pointer; width: 80%; margin: 15px 0; }
-        .status { margin-top: 15px; font-weight: 600; color: #03DAC6; }
-        #chat { text-align: left; background: #181818; padding: 12px; border-radius: 8px; height: 220px; overflow-y: auto; font-family: sans-serif; font-size: 14px; margin-top: 15px; border: 1px solid #333; line-height: 1.4; }
+        .status { margin-top: 10px; font-weight: 600; color: #03DAC6; }
+        #chat { text-align: left; background: #181818; padding: 12px; border-radius: 8px; height: 180px; overflow-y: auto; font-family: sans-serif; font-size: 14px; margin-top: 15px; border: 1px solid #333; line-height: 1.4; }
+        
+        /* Contact Form Styles */
+        .contact-box { background: #262626; padding: 15px; border-radius: 10px; margin-top: 15px; text-align: left; border: 1px solid #333; }
+        .contact-box h3 { margin: 0 0 10px 0; font-size: 14px; color: #BB86FC; text-transform: uppercase; }
+        .contact-inputs { display: flex; gap: 8px; margin-bottom: 8px; }
+        .contact-inputs input { background: #121212; border: 1px solid #444; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 13px; flex: 1; }
+        .save-btn { background: #03DAC6; color: #121212; border: none; padding: 8px 14px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; font-size: 13px; }
     </style>
 </head>
 <body>
@@ -205,6 +198,17 @@ HTML_PAGE = """
         <p>Voice-Activated AI Companion</p>
         <button class="btn" onclick="startListening()">🎤 Speak to Vemu</button>
         <div class="status" id="status">Tap button and speak</div>
+        
+        <!-- Contact Manager Form -->
+        <div class="contact-box">
+            <h3>👤 Contact Manager</h3>
+            <div class="contact-inputs">
+                <input type="text" id="contactName" placeholder="Name (e.g. mummy)" />
+                <input type="text" id="contactPhone" placeholder="Phone with country code (e.g. 919876543210)" />
+            </div>
+            <button class="save-btn" onclick="saveContact()">Save / Update Contact</button>
+        </div>
+
         <div id="chat"></div>
     </div>
 
@@ -255,6 +259,29 @@ HTML_PAGE = """
             recognition.start();
         }
 
+        function saveContact() {
+            const name = document.getElementById('contactName').value.trim();
+            const phone = document.getElementById('contactPhone').value.trim();
+
+            if (!name || !phone) {
+                alert("Please enter both Name and Phone number.");
+                return;
+            }
+
+            fetch('/add_contact', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, phone: phone })
+            })
+            .then(res => res.json())
+            .then(data => {
+                alert(data.message);
+                document.getElementById('contactName').value = '';
+                document.getElementById('contactPhone').value = '';
+            })
+            .catch(err => alert("Failed to save contact."));
+        }
+
         function askVemu(query) {
             fetch('/ask', {
                 method: 'POST',
@@ -288,6 +315,21 @@ HTML_PAGE = """
 def home():
     return render_template_string(HTML_PAGE)
 
+@app.route('/add_contact', methods=['POST'])
+def add_contact():
+    data = request.get_json()
+    name = data.get("name", "").strip().lower()
+    phone = data.get("phone", "").strip()
+
+    # Clean phone string (removes +, spaces, and dashes)
+    clean_phone = re.sub(r'[^\d]', '', phone)
+
+    if name and clean_phone:
+        CONTACTS[name] = clean_phone
+        return jsonify({"status": "success", "message": f"Saved '{name}' with number +{clean_phone}"})
+    
+    return jsonify({"status": "error", "message": "Invalid name or phone number"}), 400
+
 @app.route('/ask', methods=['POST'])
 def ask():
     data = request.get_json()
@@ -316,7 +358,6 @@ def ask():
 
     answer = None
 
-    # Try gemini-2.5-flash then fallback to gemini-2.0-flash
     for model_name in ['gemini-2.5-flash', 'gemini-2.0-flash']:
         try:
             response = client.models.generate_content(
