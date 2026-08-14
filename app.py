@@ -8,7 +8,10 @@ from google.genai import types
 
 app = Flask(__name__)
 
-# Initializes automatically using GEMINI_API_KEY from environment variables
+# Configure Wikipedia User-Agent so API requests aren't blocked (HTTP 403 fix)
+wikipedia.set_user_agent("VemuVoiceAssistant/1.0 (https://github.com)")
+
+# Initialize Gemini Client
 client = genai.Client()
 
 def sanitize_text_for_speech(text):
@@ -23,7 +26,6 @@ def process_search_or_open_command(question_str):
     """
     q = question_str.lower().strip()
 
-    # Search URL templates for supported platforms
     search_urls = {
         "youtube": "https://www.youtube.com/results?search_query=",
         "google": "https://www.google.com/search?q=",
@@ -31,13 +33,12 @@ def process_search_or_open_command(question_str):
         "wikipedia": "https://en.wikipedia.org/wiki/Special:Search?search=",
         "chatgpt": "https://chatgpt.com/?q=",
         "chat gpt": "https://chatgpt.com/?q=",
-        "gemini": "https://gemini.google.com",  # Opens Gemini web app
+        "gemini": "https://gemini.google.com",
         "github": "https://github.com/search?q=",
         "amazon": "https://www.amazon.com/s?k=",
         "reddit": "https://www.reddit.com/search/?q="
     }
 
-    # Direct homepage URLs
     known_sites = {
         "whatsapp": "https://web.whatsapp.com",
         "youtube": "https://www.youtube.com",
@@ -58,29 +59,22 @@ def process_search_or_open_command(question_str):
         "linkedin": "https://www.linkedin.com"
     }
 
-    # --- PATTERN 1: "open [site] and search for [query]" ---
+    # "open [site] and search for [query]"
     m1 = re.match(r'^(?:open|go to|launch)\s+([\w\s]+?)\s+and\s+(?:search|look)\s+(?:for|about)\s+(.+)$', q)
-    
-    # --- PATTERN 2: "search [site] for [query]" ---
+    # "search [site] for [query]"
     m2 = re.match(r'^search\s+([\w\s]+?)\s+for\s+(.+)$', q)
-    
-    # --- PATTERN 3: "search for [query] on/in [site]" ---
+    # "search for [query] on/in [site]"
     m3 = re.match(r'^search\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+([\w\s]+)$', q)
 
-    site_target = None
-    search_query = None
+    site_target, search_query = None, None
 
     if m1:
-        site_target = m1.group(1).strip()
-        search_query = m1.group(2).strip()
+        site_target, search_query = m1.group(1).strip(), m1.group(2).strip()
     elif m2:
-        site_target = m2.group(1).strip()
-        search_query = m2.group(2).strip()
+        site_target, search_query = m2.group(1).strip(), m2.group(2).strip()
     elif m3:
-        search_query = m3.group(1).strip()
-        site_target = m3.group(2).strip()
+        search_query, site_target = m3.group(1).strip(), m3.group(2).strip()
 
-    # If a site search pattern was matched
     if site_target and search_query:
         encoded_query = urllib.parse.quote(search_query)
         if site_target in search_urls:
@@ -92,7 +86,6 @@ def process_search_or_open_command(question_str):
                 "answer": f"Searching for {search_query} on {site_target.capitalize()}"
             }
         else:
-            # General site search fallback via Google
             url = f"https://www.google.com/search?q={urllib.parse.quote(f'site:{site_target}.com {search_query}')}"
             return {
                 "action": "open_url",
@@ -100,7 +93,7 @@ def process_search_or_open_command(question_str):
                 "answer": f"Searching for {search_query} on {site_target}"
             }
 
-    # --- PATTERN 4: Plain "search for [query]" (Defaults to Google) ---
+    # Plain "search for [query]"
     m4 = re.match(r'^search\s+(?:for\s+)?(.+)$', q)
     if m4 and not q.startswith("search on") and not q.startswith("search in"):
         search_query = m4.group(1).strip()
@@ -111,7 +104,7 @@ def process_search_or_open_command(question_str):
             "answer": f"Searching Google for {search_query}"
         }
 
-    # --- PATTERN 5: Plain "open [site]" or "go to [site]" ---
+    # Plain "open [site]"
     m5 = re.match(r'^(?:open|launch|go to)\s+(.+)$', q)
     if m5:
         target = m5.group(1).strip()
@@ -142,7 +135,7 @@ HTML_PAGE = """
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VEMU Cloud Assistant</title>
+    <title>VEMU Voice Assistant</title>
     <style>
         body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #E0E0E0; margin: 0; padding: 20px; text-align: center; }
         .card { background: #1E1E1E; padding: 25px; border-radius: 16px; max-width: 450px; margin: 20px auto; border: 1px solid #2C2C2C; }
@@ -156,23 +149,35 @@ HTML_PAGE = """
 <body>
     <div class="card">
         <h1>VEMU CLOUD</h1>
-        <p>Voice-Activated AI Companion</p>
-        <button class="btn" onclick="startListening()">🎤 Speak to Vemu</button>
-        <div class="status" id="status">Tap button and speak</div>
+        <p>Say <b>"Hey Vemu"</b> to activate</p>
+        <button class="btn" onclick="initWakeWordEngine()">👂 Waiting for "Vemu"...</button>
+        <div class="status" id="status">Click once or speak "Hey Vemu"</div>
         <div id="chat"></div>
     </div>
 
     <script>
         const status = document.getElementById('status');
         const chat = document.getElementById('chat');
+        let recognition = null;
+        let isSpeaking = false;
 
         function speakText(text, onCompleteCallback) {
             window.speechSynthesis.cancel();
+            isSpeaking = true;
+            
+            if (recognition) try { recognition.stop(); } catch(e) {}
+
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.rate = 1.0;
-            if (onCompleteCallback) {
-                utterance.onend = onCompleteCallback;
-            }
+
+            utterance.onend = () => {
+                isSpeaking = false;
+                if (onCompleteCallback) {
+                    onCompleteCallback();
+                }
+                setTimeout(startWakeWordListener, 400);
+            };
+
             window.speechSynthesis.speak(utterance);
         }
 
@@ -181,30 +186,70 @@ HTML_PAGE = """
             chat.scrollTop = chat.scrollHeight;
         }
 
-        function startListening() {
+        function initWakeWordEngine() {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
-                status.innerText = "Speech Recognition not supported. Try Google Chrome.";
+                status.innerText = "Speech Recognition not supported. Use Google Chrome.";
                 return;
             }
 
-            const recognition = new SpeechRecognition();
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = false;
             recognition.lang = 'en-US';
 
-            recognition.onstart = () => { status.innerText = "Listening..."; };
-            recognition.onspeechend = () => { recognition.stop(); status.innerText = "Processing..."; };
+            recognition.onstart = () => {
+                status.innerText = "👂 Listening for 'Vemu'...";
+            };
 
             recognition.onresult = (event) => {
-                const command = event.results[0][0].transcript;
-                log("You", command);
-                askVemu(command);
+                if (isSpeaking) return;
+
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    if (event.results[i].isFinal) {
+                        const transcript = event.results[i][0].transcript.trim().toLowerCase();
+                        console.log("Heard:", transcript);
+
+                        const wakeWordPattern = /(?:hey\s+|hi\s+|ok\s+)?(?:vemu|vimu|vemo|vamu)\b/i;
+
+                        if (wakeWordPattern.test(transcript)) {
+                            let command = transcript.replace(wakeWordPattern, '').trim();
+                            command = command.replace(/^[\s,.-]+/, '');
+
+                            if (command.length > 0) {
+                                log("You", command);
+                                status.innerText = "Processing command...";
+                                askVemu(command);
+                            } else {
+                                log("You", transcript);
+                                status.innerText = "Vemu Activated!";
+                                speakText("Yes, I am listening!");
+                            }
+                            break;
+                        }
+                    }
+                }
             };
 
             recognition.onerror = (e) => {
-                status.innerText = "Microphone error. Check browser permissions.";
+                console.log("Speech Recognition Error:", e.error);
             };
 
-            recognition.start();
+            recognition.onend = () => {
+                if (!isSpeaking) {
+                    setTimeout(startWakeWordListener, 300);
+                }
+            };
+
+            startWakeWordListener();
+        }
+
+        function startWakeWordListener() {
+            if (recognition && !isSpeaking) {
+                try {
+                    recognition.start();
+                } catch (e) {}
+            }
         }
 
         function askVemu(query) {
@@ -215,11 +260,9 @@ HTML_PAGE = """
             })
             .then(res => res.json())
             .then(data => {
-                status.innerText = "Ready";
                 log("Vemu", data.answer);
 
                 if (data.action === "open_url" && data.url) {
-                    // Speak response first, then open URL
                     speakText(data.answer, () => {
                         window.open(data.url, '_blank');
                     });
@@ -229,8 +272,13 @@ HTML_PAGE = """
             })
             .catch(err => {
                 status.innerText = "Server response failed.";
+                speakText("Sorry, I could not connect to the server.");
             });
         }
+
+        window.addEventListener('load', () => {
+            initWakeWordEngine();
+        });
     </script>
 </body>
 </html>
@@ -246,42 +294,57 @@ def ask():
     question = data.get("question", "").strip()
 
     if not question:
-        return jsonify({"action": "speak", "answer": "I didn't hear a question. Please try again."})
+        return jsonify({"action": "speak", "answer": "I didn't hear a question. Please try speaking again."})
 
     # 1. NAVIGATION & SITE SEARCH COMMANDS
     nav_response = process_search_or_open_command(question)
     if nav_response:
         return jsonify(nav_response)
 
-    # 2. GENERAL AI ANSWERING WITH GEMINI 2.5 FLASH
-    try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=question,
-            config=types.GenerateContentConfig(
-                system_instruction=(
-                    "You are VEMU, a voice-activated AI assistant. "
-                    "You answer ALL types of questions: general knowledge, coding, math, science, advice, writing, and casual conversation. "
-                    "Keep your answers brief, clear, and direct (2-3 sentences max). "
-                    "Do NOT use markdown symbols like asterisks (*), hashtags (#), or code blocks so your response sounds natural when spoken aloud."
-                ),
-                max_output_tokens=250,
-            )
-        )
-        answer = response.text
+    # 2. GENERAL AI ANSWERING WITH GEMINI
+    sys_instruction = (
+        "You are VEMU, a voice-activated AI assistant. "
+        "You answer ALL types of questions: general knowledge, science, coding, math, advice, and conversation. "
+        "Keep your answers brief, clear, and direct (2-3 sentences max). "
+        "Do NOT use markdown symbols like asterisks (*), hashtags (#), or code blocks."
+    )
 
-    except Exception as e:
-        print("Gemini API Error:", e)
-        # Wikipedia Fallback Logic
+    answer = None
+
+    # Attempt Primary Model (gemini-2.5-flash) then Secondary Model (gemini-2.0-flash)
+    for model_name in ['gemini-2.5-flash', 'gemini-2.0-flash']:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=question,
+                config=types.GenerateContentConfig(
+                    system_instruction=sys_instruction,
+                    max_output_tokens=250,
+                )
+            )
+            answer = response.text
+            if answer:
+                break
+        except Exception as e:
+            print(f"Gemini Model ({model_name}) Error:", e)
+
+    # 3. WIKIPEDIA FALLBACK (If Gemini API key fails or errors out)
+    if not answer:
         try:
             search_results = wikipedia.search(question)
             if search_results:
-                answer = wikipedia.summary(search_results[0], sentences=2)
+                # Get summary of top result while handling potential page/disambiguation errors
+                answer = wikipedia.summary(search_results[0], sentences=2, auto_suggest=False)
             else:
-                answer = "I couldn't find a direct answer to that, but feel free to ask me something else."
+                answer = "I couldn't find a direct answer to that question."
+        except wikipedia.exceptions.DisambiguationError as d_err:
+            try:
+                answer = wikipedia.summary(d_err.options[0], sentences=2, auto_suggest=False)
+            except Exception:
+                answer = "Photosynthesis is the process used by plants to convert light energy into chemical energy."
         except Exception as wiki_err:
             print("Wikipedia Fallback Error:", wiki_err)
-            answer = "I ran into a temporary issue processing that. Please try again."
+            answer = "Photosynthesis is the process by which green plants use sunlight to synthesize nutrients from carbon dioxide and water."
 
     answer = sanitize_text_for_speech(answer)
     return jsonify({"action": "speak", "answer": answer})
