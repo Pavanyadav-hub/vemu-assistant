@@ -8,7 +8,7 @@ from google.genai import types
 
 app = Flask(__name__)
 
-# Configure Wikipedia User-Agent so API requests aren't blocked (HTTP 403 fix)
+# Configure Wikipedia User-Agent so API requests aren't blocked
 wikipedia.set_user_agent("VemuVoiceAssistant/1.0 (https://github.com)")
 
 # Initialize Gemini Client
@@ -135,7 +135,7 @@ HTML_PAGE = """
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VEMU Voice Assistant</title>
+    <title>VEMU Cloud Assistant</title>
     <style>
         body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #E0E0E0; margin: 0; padding: 20px; text-align: center; }
         .card { background: #1E1E1E; padding: 25px; border-radius: 16px; max-width: 450px; margin: 20px auto; border: 1px solid #2C2C2C; }
@@ -149,34 +149,24 @@ HTML_PAGE = """
 <body>
     <div class="card">
         <h1>VEMU CLOUD</h1>
-        <p>Say <b>"Hey Vemu"</b> to activate</p>
-        <button class="btn" onclick="initWakeWordEngine()">👂 Waiting for "Vemu"...</button>
-        <div class="status" id="status">Click once or speak "Hey Vemu"</div>
+        <p>Voice-Activated AI Companion</p>
+        <button class="btn" onclick="startListening()">🎤 Speak to Vemu</button>
+        <div class="status" id="status">Tap button and speak</div>
         <div id="chat"></div>
     </div>
 
     <script>
         const status = document.getElementById('status');
         const chat = document.getElementById('chat');
-        let recognition = null;
-        let isSpeaking = false;
 
         function speakText(text, onCompleteCallback) {
             window.speechSynthesis.cancel();
-            isSpeaking = true;
-            
-            if (recognition) try { recognition.stop(); } catch(e) {}
-
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.rate = 1.0;
 
-            utterance.onend = () => {
-                isSpeaking = false;
-                if (onCompleteCallback) {
-                    onCompleteCallback();
-                }
-                setTimeout(startWakeWordListener, 400);
-            };
+            if (onCompleteCallback) {
+                utterance.onend = onCompleteCallback;
+            }
 
             window.speechSynthesis.speak(utterance);
         }
@@ -186,70 +176,30 @@ HTML_PAGE = """
             chat.scrollTop = chat.scrollHeight;
         }
 
-        function initWakeWordEngine() {
+        function startListening() {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
-                status.innerText = "Speech Recognition not supported. Use Google Chrome.";
+                status.innerText = "Speech Recognition not supported. Try Google Chrome.";
                 return;
             }
 
-            recognition = new SpeechRecognition();
-            recognition.continuous = true;
-            recognition.interimResults = false;
+            const recognition = new SpeechRecognition();
             recognition.lang = 'en-US';
 
-            recognition.onstart = () => {
-                status.innerText = "👂 Listening for 'Vemu'...";
-            };
+            recognition.onstart = () => { status.innerText = "Listening..."; };
+            recognition.onspeechend = () => { recognition.stop(); status.innerText = "Processing..."; };
 
             recognition.onresult = (event) => {
-                if (isSpeaking) return;
-
-                for (let i = event.resultIndex; i < event.results.length; i++) {
-                    if (event.results[i].isFinal) {
-                        const transcript = event.results[i][0].transcript.trim().toLowerCase();
-                        console.log("Heard:", transcript);
-
-                        const wakeWordPattern = /(?:hey\s+|hi\s+|ok\s+)?(?:vemu|vimu|vemo|vamu)\b/i;
-
-                        if (wakeWordPattern.test(transcript)) {
-                            let command = transcript.replace(wakeWordPattern, '').trim();
-                            command = command.replace(/^[\s,.-]+/, '');
-
-                            if (command.length > 0) {
-                                log("You", command);
-                                status.innerText = "Processing command...";
-                                askVemu(command);
-                            } else {
-                                log("You", transcript);
-                                status.innerText = "Vemu Activated!";
-                                speakText("Yes, I am listening!");
-                            }
-                            break;
-                        }
-                    }
-                }
+                const command = event.results[0][0].transcript;
+                log("You", command);
+                askVemu(command);
             };
 
             recognition.onerror = (e) => {
-                console.log("Speech Recognition Error:", e.error);
+                status.innerText = "Microphone error. Check browser permissions.";
             };
 
-            recognition.onend = () => {
-                if (!isSpeaking) {
-                    setTimeout(startWakeWordListener, 300);
-                }
-            };
-
-            startWakeWordListener();
-        }
-
-        function startWakeWordListener() {
-            if (recognition && !isSpeaking) {
-                try {
-                    recognition.start();
-                } catch (e) {}
-            }
+            recognition.start();
         }
 
         function askVemu(query) {
@@ -260,6 +210,7 @@ HTML_PAGE = """
             })
             .then(res => res.json())
             .then(data => {
+                status.innerText = "Ready";
                 log("Vemu", data.answer);
 
                 if (data.action === "open_url" && data.url) {
@@ -275,10 +226,6 @@ HTML_PAGE = """
                 speakText("Sorry, I could not connect to the server.");
             });
         }
-
-        window.addEventListener('load', () => {
-            initWakeWordEngine();
-        });
     </script>
 </body>
 </html>
@@ -311,7 +258,7 @@ def ask():
 
     answer = None
 
-    # Attempt Primary Model (gemini-2.5-flash) then Secondary Model (gemini-2.0-flash)
+    # Try gemini-2.5-flash then fallback to gemini-2.0-flash
     for model_name in ['gemini-2.5-flash', 'gemini-2.0-flash']:
         try:
             response = client.models.generate_content(
@@ -328,12 +275,11 @@ def ask():
         except Exception as e:
             print(f"Gemini Model ({model_name}) Error:", e)
 
-    # 3. WIKIPEDIA FALLBACK (If Gemini API key fails or errors out)
+    # 3. WIKIPEDIA FALLBACK
     if not answer:
         try:
             search_results = wikipedia.search(question)
             if search_results:
-                # Get summary of top result while handling potential page/disambiguation errors
                 answer = wikipedia.summary(search_results[0], sentences=2, auto_suggest=False)
             else:
                 answer = "I couldn't find a direct answer to that question."
@@ -341,10 +287,10 @@ def ask():
             try:
                 answer = wikipedia.summary(d_err.options[0], sentences=2, auto_suggest=False)
             except Exception:
-                answer = "Photosynthesis is the process used by plants to convert light energy into chemical energy."
+                answer = "I ran into multiple matching pages and couldn't narrow down the answer."
         except Exception as wiki_err:
             print("Wikipedia Fallback Error:", wiki_err)
-            answer = "Photosynthesis is the process by which green plants use sunlight to synthesize nutrients from carbon dioxide and water."
+            answer = "I ran into a temporary issue processing that. Please try again."
 
     answer = sanitize_text_for_speech(answer)
     return jsonify({"action": "speak", "answer": answer})
