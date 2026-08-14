@@ -1,5 +1,6 @@
 import os
 import re
+import urllib.parse
 from flask import Flask, render_template_string, request, jsonify
 import wikipedia
 from google import genai
@@ -7,13 +8,134 @@ from google.genai import types
 
 app = Flask(__name__)
 
-# Initializes automatically using GEMINI_API_KEY from Render Environment Variables
+# Initializes automatically using GEMINI_API_KEY from environment variables
 client = genai.Client()
 
 def sanitize_text_for_speech(text):
-    """Removes Markdown characters (*, #, `, _, etc.) so TTS sounds smooth and natural."""
+    """Removes Markdown symbols so text-to-speech reads smoothly."""
     text = re.sub(r'[\*\#\_\`\>]', '', text)
     return text.strip()
+
+def process_search_or_open_command(question_str):
+    """
+    Detects if the command asks to open a site OR search within a site.
+    Returns a dict with 'action', 'url', 'answer' if matched, else None.
+    """
+    q = question_str.lower().strip()
+
+    # Search URL templates for supported platforms
+    search_urls = {
+        "youtube": "https://www.youtube.com/results?search_query=",
+        "google": "https://www.google.com/search?q=",
+        "chrome": "https://www.google.com/search?q=",
+        "wikipedia": "https://en.wikipedia.org/wiki/Special:Search?search=",
+        "chatgpt": "https://chatgpt.com/?q=",
+        "chat gpt": "https://chatgpt.com/?q=",
+        "gemini": "https://gemini.google.com",  # Opens Gemini web app
+        "github": "https://github.com/search?q=",
+        "amazon": "https://www.amazon.com/s?k=",
+        "reddit": "https://www.reddit.com/search/?q="
+    }
+
+    # Direct homepage URLs
+    known_sites = {
+        "whatsapp": "https://web.whatsapp.com",
+        "youtube": "https://www.youtube.com",
+        "google": "https://www.google.com",
+        "chrome": "https://www.google.com",
+        "github": "https://www.github.com",
+        "facebook": "https://www.facebook.com",
+        "instagram": "https://www.instagram.com",
+        "twitter": "https://www.x.com",
+        "x": "https://www.x.com",
+        "wikipedia": "https://www.wikipedia.org",
+        "reddit": "https://www.reddit.com",
+        "chatgpt": "https://chatgpt.com",
+        "chat gpt": "https://chatgpt.com",
+        "gemini": "https://gemini.google.com",
+        "amazon": "https://www.amazon.com",
+        "netflix": "https://www.netflix.com",
+        "linkedin": "https://www.linkedin.com"
+    }
+
+    # --- PATTERN 1: "open [site] and search for [query]" ---
+    m1 = re.match(r'^(?:open|go to|launch)\s+([\w\s]+?)\s+and\s+(?:search|look)\s+(?:for|about)\s+(.+)$', q)
+    
+    # --- PATTERN 2: "search [site] for [query]" ---
+    m2 = re.match(r'^search\s+([\w\s]+?)\s+for\s+(.+)$', q)
+    
+    # --- PATTERN 3: "search for [query] on/in [site]" ---
+    m3 = re.match(r'^search\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+([\w\s]+)$', q)
+
+    site_target = None
+    search_query = None
+
+    if m1:
+        site_target = m1.group(1).strip()
+        search_query = m1.group(2).strip()
+    elif m2:
+        site_target = m2.group(1).strip()
+        search_query = m2.group(2).strip()
+    elif m3:
+        search_query = m3.group(1).strip()
+        site_target = m3.group(2).strip()
+
+    # If a site search pattern was matched
+    if site_target and search_query:
+        encoded_query = urllib.parse.quote(search_query)
+        if site_target in search_urls:
+            base_url = search_urls[site_target]
+            url = base_url if site_target == "gemini" else f"{base_url}{encoded_query}"
+            return {
+                "action": "open_url",
+                "url": url,
+                "answer": f"Searching for {search_query} on {site_target.capitalize()}"
+            }
+        else:
+            # General site search fallback via Google
+            url = f"https://www.google.com/search?q={urllib.parse.quote(f'site:{site_target}.com {search_query}')}"
+            return {
+                "action": "open_url",
+                "url": url,
+                "answer": f"Searching for {search_query} on {site_target}"
+            }
+
+    # --- PATTERN 4: Plain "search for [query]" (Defaults to Google) ---
+    m4 = re.match(r'^search\s+(?:for\s+)?(.+)$', q)
+    if m4 and not q.startswith("search on") and not q.startswith("search in"):
+        search_query = m4.group(1).strip()
+        encoded_query = urllib.parse.quote(search_query)
+        return {
+            "action": "open_url",
+            "url": f"https://www.google.com/search?q={encoded_query}",
+            "answer": f"Searching Google for {search_query}"
+        }
+
+    # --- PATTERN 5: Plain "open [site]" or "go to [site]" ---
+    m5 = re.match(r'^(?:open|launch|go to)\s+(.+)$', q)
+    if m5:
+        target = m5.group(1).strip()
+        target_clean = re.sub(r'[^a-z0-9\.\-]', '', target).strip('.')
+
+        if target_clean in known_sites:
+            return {
+                "action": "open_url",
+                "url": known_sites[target_clean],
+                "answer": f"Opening {target_clean.capitalize()}"
+            }
+        else:
+            if re.search(r'\.[a-z]{2,}$', target_clean):
+                url = f"https://{target_clean}" if target_clean.startswith("www.") else f"https://www.{target_clean}"
+            else:
+                url = f"https://www.{target_clean}.com"
+            return {
+                "action": "open_url",
+                "url": url,
+                "answer": f"Opening {target_clean}"
+            }
+
+    return None
+
 
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -62,7 +184,7 @@ HTML_PAGE = """
         function startListening() {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
-                status.innerText = "Speech Recognition not supported in this browser. Try Chrome.";
+                status.innerText = "Speech Recognition not supported. Try Google Chrome.";
                 return;
             }
 
@@ -97,7 +219,7 @@ HTML_PAGE = """
                 log("Vemu", data.answer);
 
                 if (data.action === "open_url" && data.url) {
-                    // Speak confirmation first, then open the website
+                    // Speak response first, then open URL
                     speakText(data.answer, () => {
                         window.open(data.url, '_blank');
                     });
@@ -124,50 +246,14 @@ def ask():
     question = data.get("question", "").strip()
 
     if not question:
-        return jsonify({"action": "speak", "answer": "I didn't hear a question. Please try speaking again."})
+        return jsonify({"action": "speak", "answer": "I didn't hear a question. Please try again."})
 
-    lower_q = question.lower()
+    # 1. NAVIGATION & SITE SEARCH COMMANDS
+    nav_response = process_search_or_open_command(question)
+    if nav_response:
+        return jsonify(nav_response)
 
-    # 1. COMMAND DETECTION: Open Websites
-    if lower_q.startswith("open ") or lower_q.startswith("launch ") or lower_q.startswith("go to "):
-        target = lower_q.replace("open ", "").replace("launch ", "").replace("go to ", "").strip()
-        target = re.sub(r'[^\w\.\-]', '', target)  # Clean target string
-
-        # Known shortcuts for popular sites
-        known_sites = {
-            "youtube": "https://www.youtube.com",
-            "google": "https://www.google.com",
-            "github": "https://www.github.com",
-            "facebook": "https://www.facebook.com",
-            "instagram": "https://www.instagram.com",
-            "twitter": "https://www.x.com",
-            "x": "https://www.x.com",
-            "wikipedia": "https://www.wikipedia.org",
-            "reddit": "https://www.reddit.com",
-            "chatgpt": "https://chatgpt.com",
-            "amazon": "https://www.amazon.com",
-            "netflix": "https://www.netflix.com",
-            "linkedin": "https://www.linkedin.com"
-        }
-
-        if target in known_sites:
-            url = known_sites[target]
-            site_name = target.capitalize()
-        else:
-            # Handle generic domain requests like "open stackoverflow" or "open example.org"
-            if not re.search(r'\.[a-z]{2,}$', target):
-                url = f"https://www.{target}.com"
-            else:
-                url = f"https://{target}" if target.startswith("www.") or target.startswith("http") else f"https://www.{target}"
-            site_name = target
-
-        return jsonify({
-            "action": "open_url",
-            "url": url,
-            "answer": f"Opening {site_name}"
-        })
-
-    # 2. GENERAL AI ANSWERING: Using Gemini 2.5 Flash
+    # 2. GENERAL AI ANSWERING WITH GEMINI 2.5 FLASH
     try:
         response = client.models.generate_content(
             model='gemini-2.5-flash',
